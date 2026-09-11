@@ -1,0 +1,10 @@
+ {
+    "bg": "#1e1e1e",
+    "fg": "#d4d4d4",
+    "insert": "#ffffff",
+    "select_bg": "#264f78",
+    "select_fg": "#ffffff",
+    "tab_bg": "#2d2d2d",
+    "tab_fg": "#cccccc"
+}
+

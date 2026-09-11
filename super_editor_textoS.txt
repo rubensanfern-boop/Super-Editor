@@ -1,0 +1,1081 @@
+'''Projeto Editor de Texto personalizado,
+desenvolvido este ano de 2026 com vista 
+a aprimorar a produtividade e a experiência do usuário.'''
+
+# imports
+import os
+
+import re
+from tracemalloc import start
+from turtle import pos
+from substituicoes import carregar_substituicoes
+
+import tkinter as tk
+from tkinter import filedialog, messagebox
+from tkinter import ttk
+
+from typer import style
+from pdfexporter import exportar_pdf_simples, md_para_texto
+from temas.theme import carregar_tema
+
+class EditorTexto(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("Super EDITOR")
+        self.geometry("800x600")
+        self.theme = "Light" # Tema padrão
+        self.theme = carregar_tema(self.theme)
+        self.focus_mode = False # Modo de foco desativado por padrão                                              
+
+        self._create_widgets()
+        self._create_menu()
+
+    # ---------------------------------------------------------
+    # WIDGETS E INTERFACE
+    # ---------------------------------------------------------
+    def _fade_overlay(self, start=0, end=0.8, steps=10, callback=None):
+        overlay = tk.Frame(self, bg="black")
+        overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
+
+        def fade(i):
+            alpha = start + (end - start) * (i / steps)
+            overlay.configure(bg=f"#{int(255*(1-alpha)):02x}{int(255*(1-alpha)):02x}{int(255*(1-alpha)):02x}")
+            if i < steps:
+                self.after(20, lambda: fade(i+1))
+            else:
+                if callback:
+                    callback()
+                overlay.destroy()
+
+        fade(0)
+
+    
+    def _create_widgets(self):
+        main_frame = ttk.Frame(self)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Notebook (TABS)
+        self.notebook = ttk.Notebook(main_frame)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+
+        # Criar primeira aba
+        self.criar_aba()
+
+        # Atalhos de teclado
+        self.bind("<Control-n>", lambda e: self.novo_arquivo())
+        self.bind("<Control-o>", lambda e: self.abrir_arquivo())
+        self.bind("<Control-s>", lambda e: self.salvar_arquivo())
+        self.bind("<Control-Shift-S>", lambda e: self.salvar_como())
+        self.bind("<Control-q>", lambda e: self.sair())
+        self.bind("<Control-z>", lambda e: self.desfazer())
+        self.bind("<Control-y>", lambda e: self.refazer())
+        self.bind("<Control-x>", lambda e: self.recortar())
+        self.bind("<Control-c>", lambda e: self.copiar())
+        self.bind("<Control-v>", lambda e: self.colar())
+        self.bind("<Control-a>", lambda e: self.selecionar_tudo())
+        self.bind_all("<Control-w>", lambda e: self.fechar_tab())
+        self.bind("<F11>", lambda e: self.modo_focus())
+
+
+
+        # Barra de status
+        self.status_bar = ttk.Label(self, text="Sem arquivo aberto", anchor=tk.W)
+        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+
+    # ---------------------------------------------------------
+    # MENU
+    # ---------------------------------------------------------
+    def _create_menu(self):
+        menu_bar = tk.Menu(self)
+
+        # Menu Arquivo
+        file_menu = tk.Menu(menu_bar, tearoff=0)
+        file_menu.add_command(label="Novo   Ctrl+N", command=self.novo_arquivo)
+        file_menu.add_command(label="Abrir   Ctrl+O", command=self.abrir_arquivo)
+        file_menu.add_command(label="Salvar   Ctrl+S", command=self.salvar_arquivo)
+        file_menu.add_command(label="Salvar Como   Ctrl+Shift+S", command=self.salvar_como)
+        file_menu.add_command(label="Exportar para PDF", command=self.exportar_pdf)
+        file_menu.add_command(label="Fechar Aba    Ctrl+W", command=self.fechar_tab)
+
+
+        file_menu.add_separator()
+        file_menu.add_command(label="Sair   Ctrl+Q", command=self.sair)
+        menu_bar.add_cascade(label="Arquivo", menu=file_menu)
+
+        # Menu Editar
+        edit_menu = tk.Menu(menu_bar, tearoff=0)
+        edit_menu.add_command(label="Desfazer   Ctrl+Z", command=self.desfazer)
+        edit_menu.add_command(label="Refazer   Ctrl+Y", command=self.refazer)
+        edit_menu.add_separator()
+        edit_menu.add_command(label="Recortar   Ctrl+X", command=self.recortar)
+        edit_menu.add_command(label="Copiar   Ctrl+C", command=self.copiar)
+        edit_menu.add_command(label="Colar   Ctrl+V", command=self.colar)
+        edit_menu.add_separator()
+        edit_menu.add_command(label="Selecionar Tudo   Ctrl+A", command=self.selecionar_tudo)
+        edit_menu.add_command(label="Substituir Palavras (Dicionário)",command=self.substituir_palavras)
+        edit_menu.add_command(label="Modo Focus   F11", command=self.modo_focus)
+
+
+        menu_bar.add_cascade(label="Editar", menu=edit_menu)
+
+        # Menu Tema
+        theme_menu = tk.Menu(menu_bar, tearoff=0)
+        theme_menu.add_command(label="Tema Claro", command=lambda: self.mudar_tema("light"))
+        theme_menu.add_command(label="Tema Escuro", command=lambda: self.mudar_tema("dark"))
+        menu_bar.add_cascade(label="Tema", menu=theme_menu)
+
+        # Menu Ajuda
+        help_menu = tk.Menu(menu_bar, tearoff=0)
+        help_menu.add_command(label="Sobre", command=lambda: messagebox.showinfo(
+            "Sobre", "Editor de Texto Personalizado\nDesenvolvido em 2026 por Rúben Fernandes."
+        ))
+        help_menu.add_command(label="Atalhos de Teclado", command=self.mostrar_atalhos)
+        menu_bar.add_cascade(label="Ajuda", menu=help_menu)
+
+        self.config(menu=menu_bar)
+
+    # ---------------------------------------------------------
+    # TABS
+    # ---------------------------------------------------------
+    def criar_aba(self, nome="Sem Título"):
+        frame = ttk.Frame(self.notebook)
+
+        scroll_bar = ttk.Scrollbar(frame)
+        scroll_bar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        widget_text = tk.Text(frame, wrap=tk.WORD, undo=True, maxundo=-1,
+                              yscrollcommand=scroll_bar.set)
+        widget_text.pack(fill=tk.BOTH, expand=True)
+        scroll_bar.config(command=widget_text.yview)
+
+        widget_text.tag_config("highlight", background="#fff59d")  # amarelo suave
+
+
+        # Bindings para atualizar o contador de palavras e caracteres
+
+        widget_text.bind("<Key>", self._evento_teclado)
+
+
+        frame.text_widget = widget_text
+        frame.current_file = None
+        frame.modified = False
+
+        self.notebook.add(frame, text=nome)
+        self.notebook.select(frame)
+
+    # ---------------------------------------------------------
+    # FUNÇÕES DE ARQUIVO
+    # ---------------------------------------------------------
+    def _evento_teclado(self, event): # Função para capturar eventos de teclado e atualizar o contador de palavras
+        current_frame = self.notebook.nametowidget(self.notebook.select())
+        self.atualizar_contador(event)
+        self._auto_substituir_palavra(event)
+        self.marcar_aba_modificada(current_frame)
+
+    def novo_arquivo(self):
+        self.criar_aba()
+        self.status_bar.config(text="Novo arquivo")
+        self.atualizar_contador()
+
+    def abrir_arquivo(self):
+        file_path = filedialog.askopenfilename(
+            filetypes=[("Arquivos de Texto", "*.txt"), ("Todos os Arquivos", "*.*")]
+        )
+        if file_path:
+            try:
+                with open(file_path, "r", encoding="utf-8") as file:
+                    content = file.read()
+
+                self.criar_aba(os.path.basename(file_path))
+                current_frame = self.notebook.nametowidget(self.notebook.select())
+                current_frame.text_widget.delete("1.0", tk.END)
+                current_frame.text_widget.insert(tk.END, content)
+                current_frame.current_file = file_path
+
+                self.status_bar.config(text=f"Abrindo: {os.path.basename(file_path)}")
+                current_frame.modified = False  # Resetar o estado de modificação após abrir
+                self.notebook.tab(current_frame, text=os.path.basename(file_path))  # Atualizar o nome da aba
+
+            except Exception as e:
+                messagebox.showerror("Erro", f"Não foi possível abrir o arquivo: {e}")
+        current_frame.text_widget.edit_modified(False)  # Resetar o estado de modificação após abrir
+        self.marcar_aba_modificada()
+
+    def salvar_arquivo(self):
+        current_frame = self.notebook.nametowidget(self.notebook.select())
+        if current_frame.current_file:
+            try:
+                with open(current_frame.current_file, "w", encoding="utf-8") as file:
+                    file.write(current_frame.text_widget.get("1.0", tk.END))
+                self.status_bar.config(text=f"Salvo: {os.path.basename(current_frame.current_file)}")
+            except Exception as e:
+                messagebox.showerror("Erro", f"Não foi possível salvar o arquivo: {e}")
+        else:
+            self.salvar_como()
+        current_frame.modified = False  # Resetar o estado de modificação após salvar
+        self.status_bar.config(text="Pronto!")
+        nome = os.path.basename(current_frame.current_file)
+        self.notebook.tab(current_frame, text=nome)  # Atualizar o nome da aba após salvar
+
+    def salvar_como(self):
+        current_frame = self.notebook.nametowidget(self.notebook.select())
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            filetypes=[("Arquivos de Texto", "*.txt"), ("Todos os Arquivos", "*.*")]
+        )
+        if file_path:
+            try:
+                with open(file_path, "w", encoding="utf-8") as file:
+                    file.write(current_frame.text_widget.get("1.0", tk.END))
+
+                current_frame.current_file = file_path
+                self.notebook.tab(current_frame, text=os.path.basename(file_path))
+                self.status_bar.config(text=f"Salvo como: {os.path.basename(file_path)}")
+
+            except Exception as e:
+                messagebox.showerror("Erro", f"Não foi possível salvar o arquivo: {e}")
+        current_frame.text_widget.edit_modified(False)  # Resetar o estado de modificação após salvar
+        self.marcar_aba_modificada() # Atualizar o estado da aba após salvar
+
+    def sair(self):
+        current_frame = self.notebook.nametowidget(self.notebook.select())
+        text_widget = current_frame.text_widget
+
+        if text_widget.edit_modified():  # Verifica se houve modificações no texto
+            if messagebox.askyesno("Confirmar", "Deseja salvar o arquivo atual antes de sair?"):
+                self.salvar_arquivo()
+        self.destroy()
+
+    def exportar_pdf(self): # Função para exportar o conteúdo da aba atual para PDF
+        current_frame = self.notebook.nametowidget(self.notebook.select())
+        texto = current_frame.text_widget.get("1.0", "end-1c")
+        caminho = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF", "*.pdf")])
+
+        if caminho:
+            texto_convertido = md_para_texto(texto)
+            exportar_pdf_simples(texto_convertido, caminho)
+
+    def fechar_tab(self): # Função para fechar a aba atual
+        aba_atual = self.notebook.select()  # ID da aba atual
+        if aba_atual:
+            self.notebook.forget(aba_atual)
+
+    def substituir_palavras(self): # Função para substituir palavras no texto da aba atual
+        subs = carregar_substituicoes()
+        current_frame = self.notebook.nametowidget(self.notebook.select())
+        texto = current_frame.text_widget.get("1.0", "end-1c")
+        # Juntar todas as substituições em um único dicionário
+        todas_subs = {}
+        for categoria in subs.values():
+            todas_subs.update(categoria)
+        # Substituição Avançada
+        for errado, correto in todas_subs.items():
+            # Usar regex para substituir palavras inteiras, ignorando maiúsculas/minúsculas
+            padrao = rf'(?<!\w){re.escape(errado)}(?!\w)'
+            texto = re.sub(padrao, correto, texto, flags=re.IGNORECASE)
+
+
+        current_frame.text_widget.delete("1.0", "end")
+        current_frame.text_widget.insert("1.0", texto)
+        
+    def procurar_substituir(self):
+        janela = tk.Toplevel(self)
+        janela.title("Procurar e Substituir")
+        janela.geometry("300x150")
+
+        tk.Label(janela, text="Procurar:").pack()
+        entrada_procurar = tk.Entry(janela)
+        entrada_procurar.pack()
+
+        tk.Label(janela, text="Substituir por:").pack()
+        entrada_substituir = tk.Entry(janela)
+        entrada_substituir.pack()
+
+        def aplicar():
+            current_frame = self.notebook.nametowidget(self.notebook.select())
+            procurar = entrada_procurar.get()
+            substituir = entrada_substituir.get()
+
+            texto = current_frame.text_widget.get("1.0", "end-1c")
+            padrao = r"\b" + re.escape(procurar) + r"\b"
+            texto = re.sub(padrao, substituir, texto)
+
+            current_frame.text_widget.delete("1.0", "end")
+            current_frame.text_widget.insert("1.0", texto)
+
+            janela.destroy()
+
+        tk.Button(janela, text="Aplicar", command=aplicar).pack(pady=10)
+
+    def aplicar_tema(self): # Função para aplicar o tema atual ao editor
+        tema = self.tema
+
+        style = ttk.Style()
+        # Estilo para o fundo da janela principal
+        style.configure("TNotebook", background=tema["tab_bg"])
+        style.configure("TNotebook.Tab", background=tema["tab_bg"], foreground=tema["tab_fg"])
+        style.configure("TNotebook.Tab",background=tema["tab_bg"],foreground=tema["tab_fg"])
+        # Estilo para a aba selecionada
+        style.map("TNotebook.Tab",background=[("selected", tema["bg"])],foreground=[("selected", tema["fg"])])
+
+        for tab in self.notebook.tabs():
+            frame = self.notebook.nametowidget(tab)
+            for widget in frame.winfo_children():
+                if isinstance(widget, tk.Text):
+                    widget.config(
+                    bg=tema["bg"],
+                    fg=tema["fg"],
+                    insertbackground=tema["insert"],
+                    selectbackground=tema["select_bg"],
+                    selectforeground=tema["select_fg"]
+                )
+                    
+    def mudar_tema(self, novo_tema): # Função para mudar o tema do editor
+        self.tema_atual = novo_tema
+        self.tema = carregar_tema(novo_tema)
+        self.aplicar_tema()
+
+    def _auto_substituir_palavra(self, event):
+        tecla = event.keysym
+
+        # Só corrigir quando o utilizador termina uma palavra
+        if tecla not in ("space", "Return", "Tab", "comma", "period", "semicolon", "colon"):
+            return
+
+        subs = carregar_substituicoes()
+
+        todas_subs = {}
+        for categoria in subs.values():
+            todas_subs.update(categoria)
+
+        current_frame = self.notebook.nametowidget(self.notebook.select())
+        text_widget = current_frame.text_widget
+
+        # posição antes do espaço/ponto/etc
+        pos = text_widget.index("insert-1c")
+
+        # início e fim da palavra usando wordstart/wordend
+        palavra_inicio = text_widget.index(f"{pos} wordstart")
+        palavra_fim = text_widget.index(f"{pos} wordend")
+
+        palavra = text_widget.get(palavra_inicio, palavra_fim)
+
+        # verificar se existe no dicionário (ignorando maiúsculas)
+        for errado, correto in todas_subs.items():
+            if palavra.lower() == errado.lower():
+
+                # 1) Highlight temporário
+                text_widget.tag_add("highlight", palavra_inicio, palavra_fim)
+
+                # 2) Remover highlight e substituir após 200ms
+                def substituir():
+                    text_widget.tag_remove("highlight", palavra_inicio, palavra_fim)
+                    text_widget.delete(palavra_inicio, palavra_fim)
+                    text_widget.insert(palavra_inicio, correto)
+                    current_frame.modified = True  # manter indicador estável
+
+                text_widget.after(200, substituir)
+                break
+
+
+    def marcar_aba_modificada(self, frame): # Função para marcar a aba atual como modificada, adicionando um símbolo de modificação
+        current_frame = self.notebook.nametowidget(self.notebook.select())
+        
+        if not frame.modified:
+            nome = self.notebook.tab(frame, "text")
+            self.notebook.tab(frame, text="✎" + nome) # Adiciona o símbolo de modificação
+            frame.modified = True
+            self.status_bar.config(text="Modificado")
+
+    def _criar_banner_focus(self): # Função para criar o banner de modo focus
+        self.banner_focus = tk.Label(
+        self,
+        text="🧘 MODO FOCUS ATIVO",
+        bg="#222",
+        fg="#00ff88",
+        font=("Segoe UI", 14, "bold"),
+        anchor="center")
+        self.banner_focus.pack(fill=tk.X)
+
+    def _remover_banner_focus(self): # Função para remover o banner de modo focus
+        if hasattr(self, "banner_focus"):
+            self.banner_focus.destroy()
+
+
+
+    def modo_focus(self):
+        self.focus_mode = not self.focus_mode
+
+        if self.focus_mode:
+            # Fade-in antes de entrar no modo focus
+            self._fade_overlay(start=0, end=0.8, callback=self._ativar_focus)
+
+        else:
+            # Fade-out ao sair do modo focus
+            self._fade_overlay(start=0.8, end=0, callback=self._desativar_focus)
+
+    def _ativar_focus(self):
+        # esconder menus
+        self.config(menu="")
+
+        # esconder barra de estado
+        self.status_bar.pack_forget()
+
+        # esconder tabs
+        self.notebook.pack_forget()
+
+        # banner especial
+        self._criar_banner_focus()
+
+        # criar área de texto fullscreen
+        self.focus_frame = ttk.Frame(self)
+        self.focus_frame.pack(fill=tk.BOTH, expand=True)
+
+        current_frame = self.notebook.nametowidget(self.notebook.select())
+        self.focus_text = tk.Text(self.focus_frame, wrap=tk.WORD, undo=True)
+        self.focus_text.pack(fill=tk.BOTH, expand=True)
+
+        # copiar conteúdo da aba atual
+        texto = current_frame.text_widget.get("1.0", tk.END)
+        self.focus_text.insert("1.0", texto)
+
+        # sincronizar
+        self.focus_text.bind("<Key>", lambda e: self._sync_focus_text())
+
+    def _desativar_focus(self):
+        # remover banner
+        self._remover_banner_focus()
+
+        # destruir frame focus
+        self.focus_frame.destroy()
+
+        # restaurar notebook
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+
+        # restaurar barra de estado
+        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+
+        # restaurar menu
+        self._create_menu()
+
+
+
+    def _sync_focus_text(self): # Função para sincronizar o conteúdo do modo de foco com a aba original
+        current_frame = self.notebook.nametowidget(self.notebook.select())
+        texto = self.focus_text.get("1.0", tk.END)
+        current_frame.text_widget.delete("1.0", tk.END)
+        current_frame.text_widget.insert("1.0", texto)
+        current_frame.modified = True
+
+
+
+
+    #---------------------------------------------------------
+    # Funções de edição
+    #---------------------------------------------------------
+    def desfazer(self):
+        current_frame = self.notebook.nametowidget(self.notebook.select())
+        current_frame.text_widget.edit_undo()
+
+    def refazer(self):
+        current_frame = self.notebook.nametowidget(self.notebook.select())
+        current_frame.text_widget.edit_redo()
+
+    def recortar(self):
+        current_frame = self.notebook.nametowidget(self.notebook.select())
+        current_frame.text_widget.event_generate("<<Cut>>")
+
+    def copiar(self):
+        current_frame = self.notebook.nametowidget(self.notebook.select())
+        current_frame.text_widget.event_generate("<<Copy>>")
+
+    def colar(self):
+        current_frame = self.notebook.nametowidget(self.notebook.select())
+        current_frame.text_widget.event_generate("<<Paste>>")
+
+    def selecionar_tudo(self):
+        current_frame = self.notebook.nametowidget(self.notebook.select())
+        current_frame.text_widget.tag_add("sel", "1.0", "end")
+
+    def mostrar_atalhos(self):
+        atalhos = (
+            "Atalhos de Teclado:\n\n"
+            "Novo Arquivo: Ctrl+N\n"
+            "Abrir Arquivo: Ctrl+O\n"
+            "Salvar Arquivo: Ctrl+S\n"
+            "Salvar Como: Ctrl+Shift+S\n"
+            "Exportar para PDF: (Menu Arquivo)\n"
+            "Fechar Aba: Ctrl+W\n"
+            "Sair: Ctrl+Q\n"
+            "Desfazer: Ctrl+Z\n"
+            "Refazer: Ctrl+Y\n"
+            "Recortar: Ctrl+X\n"
+            "Copiar: Ctrl+C\n"
+            "Colar: Ctrl+V\n"
+            "Selecionar Tudo: Ctrl+A\n"
+        )
+        messagebox.showinfo("Atalhos de Teclado", atalhos)
+    # ---------------------------------------------------------
+    # CONTADOR DE PALAVRAS
+    # ---------------------------------------------------------
+    def atualizar_contador(self, event=None):
+        current_frame = self.notebook.nametowidget(self.notebook.select())
+        texto = current_frame.text_widget.get("1.0", tk.END).strip()
+
+        palavras = len(texto.split())
+        caracteres = len(texto)
+
+        if current_frame.current_file:
+            nome = os.path.basename(current_frame.current_file)
+            self.status_bar.config(text=f"{nome} | Palavras: {palavras} | Caracteres: {caracteres}")
+        else:
+            self.status_bar.config(text=f"Sem arquivo aberto | Palavras: {palavras} | Caracteres: {caracteres}")
+
+    # ---------------------------------------------------------
+    def run(self):
+        self.mainloop()
+
+
+if __name__ == "__main__":
+    editor = EditorTexto()
+    editor.run()'''Projeto Editor de Texto personalizado,
+desenvolvido este ano de 2026 com vista 
+a aprimorar a produtividade e a experiência do usuário.'''
+
+# imports
+import os
+
+import re
+from tracemalloc import start
+from turtle import pos
+from substituicoes import carregar_substituicoes
+
+import tkinter as tk
+from tkinter import filedialog, messagebox
+from tkinter import ttk
+
+from typer import style
+from pdfexporter import exportar_pdf_simples, md_para_texto
+from temas.theme import carregar_tema
+
+class EditorTexto(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("Super EDITOR")
+        self.geometry("800x600")
+        self.theme = "Light" # Tema padrão
+        self.theme = carregar_tema(self.theme)
+        self.focus_mode = False # Modo de foco desativado por padrão                                              
+
+        self._create_widgets()
+        self._create_menu()
+
+    # ---------------------------------------------------------
+    # WIDGETS E INTERFACE
+    # ---------------------------------------------------------
+    def _fade_overlay(self, start=0, end=0.8, steps=10, callback=None):
+        overlay = tk.Frame(self, bg="black")
+        overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
+
+        def fade(i):
+            alpha = start + (end - start) * (i / steps)
+            overlay.configure(bg=f"#{int(255*(1-alpha)):02x}{int(255*(1-alpha)):02x}{int(255*(1-alpha)):02x}")
+            if i < steps:
+                self.after(20, lambda: fade(i+1))
+            else:
+                if callback:
+                    callback()
+                overlay.destroy()
+
+        fade(0)
+
+    
+    def _create_widgets(self):
+        main_frame = ttk.Frame(self)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Notebook (TABS)
+        self.notebook = ttk.Notebook(main_frame)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+
+        # Criar primeira aba
+        self.criar_aba()
+
+        # Atalhos de teclado
+        self.bind("<Control-n>", lambda e: self.novo_arquivo())
+        self.bind("<Control-o>", lambda e: self.abrir_arquivo())
+        self.bind("<Control-s>", lambda e: self.salvar_arquivo())
+        self.bind("<Control-Shift-S>", lambda e: self.salvar_como())
+        self.bind("<Control-q>", lambda e: self.sair())
+        self.bind("<Control-z>", lambda e: self.desfazer())
+        self.bind("<Control-y>", lambda e: self.refazer())
+        self.bind("<Control-x>", lambda e: self.recortar())
+        self.bind("<Control-c>", lambda e: self.copiar())
+        self.bind("<Control-v>", lambda e: self.colar())
+        self.bind("<Control-a>", lambda e: self.selecionar_tudo())
+        self.bind_all("<Control-w>", lambda e: self.fechar_tab())
+        self.bind("<F11>", lambda e: self.modo_focus())
+
+
+
+        # Barra de status
+        self.status_bar = ttk.Label(self, text="Sem arquivo aberto", anchor=tk.W)
+        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+
+    # ---------------------------------------------------------
+    # MENU
+    # ---------------------------------------------------------
+    def _create_menu(self):
+        menu_bar = tk.Menu(self)
+
+        # Menu Arquivo
+        file_menu = tk.Menu(menu_bar, tearoff=0)
+        file_menu.add_command(label="Novo   Ctrl+N", command=self.novo_arquivo)
+        file_menu.add_command(label="Abrir   Ctrl+O", command=self.abrir_arquivo)
+        file_menu.add_command(label="Salvar   Ctrl+S", command=self.salvar_arquivo)
+        file_menu.add_command(label="Salvar Como   Ctrl+Shift+S", command=self.salvar_como)
+        file_menu.add_command(label="Exportar para PDF", command=self.exportar_pdf)
+        file_menu.add_command(label="Fechar Aba    Ctrl+W", command=self.fechar_tab)
+
+
+        file_menu.add_separator()
+        file_menu.add_command(label="Sair   Ctrl+Q", command=self.sair)
+        menu_bar.add_cascade(label="Arquivo", menu=file_menu)
+
+        # Menu Editar
+        edit_menu = tk.Menu(menu_bar, tearoff=0)
+        edit_menu.add_command(label="Desfazer   Ctrl+Z", command=self.desfazer)
+        edit_menu.add_command(label="Refazer   Ctrl+Y", command=self.refazer)
+        edit_menu.add_separator()
+        edit_menu.add_command(label="Recortar   Ctrl+X", command=self.recortar)
+        edit_menu.add_command(label="Copiar   Ctrl+C", command=self.copiar)
+        edit_menu.add_command(label="Colar   Ctrl+V", command=self.colar)
+        edit_menu.add_separator()
+        edit_menu.add_command(label="Selecionar Tudo   Ctrl+A", command=self.selecionar_tudo)
+        edit_menu.add_command(label="Substituir Palavras (Dicionário)",command=self.substituir_palavras)
+        edit_menu.add_command(label="Modo Focus   F11", command=self.modo_focus)
+
+
+        menu_bar.add_cascade(label="Editar", menu=edit_menu)
+
+        # Menu Tema
+        theme_menu = tk.Menu(menu_bar, tearoff=0)
+        theme_menu.add_command(label="Tema Claro", command=lambda: self.mudar_tema("light"))
+        theme_menu.add_command(label="Tema Escuro", command=lambda: self.mudar_tema("dark"))
+        menu_bar.add_cascade(label="Tema", menu=theme_menu)
+
+        # Menu Ajuda
+        help_menu = tk.Menu(menu_bar, tearoff=0)
+        help_menu.add_command(label="Sobre", command=lambda: messagebox.showinfo(
+            "Sobre", "Editor de Texto Personalizado\nDesenvolvido em 2026 por Rúben Fernandes."
+        ))
+        help_menu.add_command(label="Atalhos de Teclado", command=self.mostrar_atalhos)
+        menu_bar.add_cascade(label="Ajuda", menu=help_menu)
+
+        self.config(menu=menu_bar)
+
+    # ---------------------------------------------------------
+    # TABS
+    # ---------------------------------------------------------
+    def criar_aba(self, nome="Sem Título"):
+        frame = ttk.Frame(self.notebook)
+
+        scroll_bar = ttk.Scrollbar(frame)
+        scroll_bar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        widget_text = tk.Text(frame, wrap=tk.WORD, undo=True, maxundo=-1,
+                              yscrollcommand=scroll_bar.set)
+        widget_text.pack(fill=tk.BOTH, expand=True)
+        scroll_bar.config(command=widget_text.yview)
+
+        widget_text.tag_config("highlight", background="#fff59d")  # amarelo suave
+
+
+        # Bindings para atualizar o contador de palavras e caracteres
+
+        widget_text.bind("<Key>", self._evento_teclado)
+
+
+        frame.text_widget = widget_text
+        frame.current_file = None
+        frame.modified = False
+
+        self.notebook.add(frame, text=nome)
+        self.notebook.select(frame)
+
+    # ---------------------------------------------------------
+    # FUNÇÕES DE ARQUIVO
+    # ---------------------------------------------------------
+    def _evento_teclado(self, event): # Função para capturar eventos de teclado e atualizar o contador de palavras
+        current_frame = self.notebook.nametowidget(self.notebook.select())
+        self.atualizar_contador(event)
+        self._auto_substituir_palavra(event)
+        self.marcar_aba_modificada(current_frame)
+
+    def novo_arquivo(self):
+        self.criar_aba()
+        self.status_bar.config(text="Novo arquivo")
+        self.atualizar_contador()
+
+    def abrir_arquivo(self):
+        file_path = filedialog.askopenfilename(
+            filetypes=[("Arquivos de Texto", "*.txt"), ("Todos os Arquivos", "*.*")]
+        )
+        if file_path:
+            try:
+                with open(file_path, "r", encoding="utf-8") as file:
+                    content = file.read()
+
+                self.criar_aba(os.path.basename(file_path))
+                current_frame = self.notebook.nametowidget(self.notebook.select())
+                current_frame.text_widget.delete("1.0", tk.END)
+                current_frame.text_widget.insert(tk.END, content)
+                current_frame.current_file = file_path
+
+                self.status_bar.config(text=f"Abrindo: {os.path.basename(file_path)}")
+                current_frame.modified = False  # Resetar o estado de modificação após abrir
+                self.notebook.tab(current_frame, text=os.path.basename(file_path))  # Atualizar o nome da aba
+
+            except Exception as e:
+                messagebox.showerror("Erro", f"Não foi possível abrir o arquivo: {e}")
+        current_frame.text_widget.edit_modified(False)  # Resetar o estado de modificação após abrir
+        self.marcar_aba_modificada()
+
+    def salvar_arquivo(self):
+        current_frame = self.notebook.nametowidget(self.notebook.select())
+        if current_frame.current_file:
+            try:
+                with open(current_frame.current_file, "w", encoding="utf-8") as file:
+                    file.write(current_frame.text_widget.get("1.0", tk.END))
+                self.status_bar.config(text=f"Salvo: {os.path.basename(current_frame.current_file)}")
+            except Exception as e:
+                messagebox.showerror("Erro", f"Não foi possível salvar o arquivo: {e}")
+        else:
+            self.salvar_como()
+        current_frame.modified = False  # Resetar o estado de modificação após salvar
+        self.status_bar.config(text="Pronto!")
+        nome = os.path.basename(current_frame.current_file)
+        self.notebook.tab(current_frame, text=nome)  # Atualizar o nome da aba após salvar
+
+    def salvar_como(self):
+        current_frame = self.notebook.nametowidget(self.notebook.select())
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            filetypes=[("Arquivos de Texto", "*.txt"), ("Todos os Arquivos", "*.*")]
+        )
+        if file_path:
+            try:
+                with open(file_path, "w", encoding="utf-8") as file:
+                    file.write(current_frame.text_widget.get("1.0", tk.END))
+
+                current_frame.current_file = file_path
+                self.notebook.tab(current_frame, text=os.path.basename(file_path))
+                self.status_bar.config(text=f"Salvo como: {os.path.basename(file_path)}")
+
+            except Exception as e:
+                messagebox.showerror("Erro", f"Não foi possível salvar o arquivo: {e}")
+        current_frame.text_widget.edit_modified(False)  # Resetar o estado de modificação após salvar
+        self.marcar_aba_modificada() # Atualizar o estado da aba após salvar
+
+    def sair(self):
+        current_frame = self.notebook.nametowidget(self.notebook.select())
+        text_widget = current_frame.text_widget
+
+        if text_widget.edit_modified():  # Verifica se houve modificações no texto
+            if messagebox.askyesno("Confirmar", "Deseja salvar o arquivo atual antes de sair?"):
+                self.salvar_arquivo()
+        self.destroy()
+
+    def exportar_pdf(self): # Função para exportar o conteúdo da aba atual para PDF
+        current_frame = self.notebook.nametowidget(self.notebook.select())
+        texto = current_frame.text_widget.get("1.0", "end-1c")
+        caminho = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF", "*.pdf")])
+
+        if caminho:
+            texto_convertido = md_para_texto(texto)
+            exportar_pdf_simples(texto_convertido, caminho)
+
+    def fechar_tab(self): # Função para fechar a aba atual
+        aba_atual = self.notebook.select()  # ID da aba atual
+        if aba_atual:
+            self.notebook.forget(aba_atual)
+
+    def substituir_palavras(self): # Função para substituir palavras no texto da aba atual
+        subs = carregar_substituicoes()
+        current_frame = self.notebook.nametowidget(self.notebook.select())
+        texto = current_frame.text_widget.get("1.0", "end-1c")
+        # Juntar todas as substituições em um único dicionário
+        todas_subs = {}
+        for categoria in subs.values():
+            todas_subs.update(categoria)
+        # Substituição Avançada
+        for errado, correto in todas_subs.items():
+            # Usar regex para substituir palavras inteiras, ignorando maiúsculas/minúsculas
+            padrao = rf'(?<!\w){re.escape(errado)}(?!\w)'
+            texto = re.sub(padrao, correto, texto, flags=re.IGNORECASE)
+
+
+        current_frame.text_widget.delete("1.0", "end")
+        current_frame.text_widget.insert("1.0", texto)
+        
+    def procurar_substituir(self):
+        janela = tk.Toplevel(self)
+        janela.title("Procurar e Substituir")
+        janela.geometry("300x150")
+
+        tk.Label(janela, text="Procurar:").pack()
+        entrada_procurar = tk.Entry(janela)
+        entrada_procurar.pack()
+
+        tk.Label(janela, text="Substituir por:").pack()
+        entrada_substituir = tk.Entry(janela)
+        entrada_substituir.pack()
+
+        def aplicar():
+            current_frame = self.notebook.nametowidget(self.notebook.select())
+            procurar = entrada_procurar.get()
+            substituir = entrada_substituir.get()
+
+            texto = current_frame.text_widget.get("1.0", "end-1c")
+            padrao = r"\b" + re.escape(procurar) + r"\b"
+            texto = re.sub(padrao, substituir, texto)
+
+            current_frame.text_widget.delete("1.0", "end")
+            current_frame.text_widget.insert("1.0", texto)
+
+            janela.destroy()
+
+        tk.Button(janela, text="Aplicar", command=aplicar).pack(pady=10)
+
+    def aplicar_tema(self): # Função para aplicar o tema atual ao editor
+        tema = self.tema
+
+        style = ttk.Style()
+        # Estilo para o fundo da janela principal
+        style.configure("TNotebook", background=tema["tab_bg"])
+        style.configure("TNotebook.Tab", background=tema["tab_bg"], foreground=tema["tab_fg"])
+        style.configure("TNotebook.Tab",background=tema["tab_bg"],foreground=tema["tab_fg"])
+        # Estilo para a aba selecionada
+        style.map("TNotebook.Tab",background=[("selected", tema["bg"])],foreground=[("selected", tema["fg"])])
+
+        for tab in self.notebook.tabs():
+            frame = self.notebook.nametowidget(tab)
+            for widget in frame.winfo_children():
+                if isinstance(widget, tk.Text):
+                    widget.config(
+                    bg=tema["bg"],
+                    fg=tema["fg"],
+                    insertbackground=tema["insert"],
+                    selectbackground=tema["select_bg"],
+                    selectforeground=tema["select_fg"]
+                )
+                    
+    def mudar_tema(self, novo_tema): # Função para mudar o tema do editor
+        self.tema_atual = novo_tema
+        self.tema = carregar_tema(novo_tema)
+        self.aplicar_tema()
+
+    def _auto_substituir_palavra(self, event):
+        tecla = event.keysym
+
+        # Só corrigir quando o utilizador termina uma palavra
+        if tecla not in ("space", "Return", "Tab", "comma", "period", "semicolon", "colon"):
+            return
+
+        subs = carregar_substituicoes()
+
+        todas_subs = {}
+        for categoria in subs.values():
+            todas_subs.update(categoria)
+
+        current_frame = self.notebook.nametowidget(self.notebook.select())
+        text_widget = current_frame.text_widget
+
+        # posição antes do espaço/ponto/etc
+        pos = text_widget.index("insert-1c")
+
+        # início e fim da palavra usando wordstart/wordend
+        palavra_inicio = text_widget.index(f"{pos} wordstart")
+        palavra_fim = text_widget.index(f"{pos} wordend")
+
+        palavra = text_widget.get(palavra_inicio, palavra_fim)
+
+        # verificar se existe no dicionário (ignorando maiúsculas)
+        for errado, correto in todas_subs.items():
+            if palavra.lower() == errado.lower():
+
+                # 1) Highlight temporário
+                text_widget.tag_add("highlight", palavra_inicio, palavra_fim)
+
+                # 2) Remover highlight e substituir após 200ms
+                def substituir():
+                    text_widget.tag_remove("highlight", palavra_inicio, palavra_fim)
+                    text_widget.delete(palavra_inicio, palavra_fim)
+                    text_widget.insert(palavra_inicio, correto)
+                    current_frame.modified = True  # manter indicador estável
+
+                text_widget.after(200, substituir)
+                break
+
+
+    def marcar_aba_modificada(self, frame): # Função para marcar a aba atual como modificada, adicionando um símbolo de modificação
+        current_frame = self.notebook.nametowidget(self.notebook.select())
+        
+        if not frame.modified:
+            nome = self.notebook.tab(frame, "text")
+            self.notebook.tab(frame, text="✎" + nome) # Adiciona o símbolo de modificação
+            frame.modified = True
+            self.status_bar.config(text="Modificado")
+
+    def _criar_banner_focus(self): # Função para criar o banner de modo focus
+        self.banner_focus = tk.Label(
+        self,
+        text="🧘 MODO FOCUS ATIVO",
+        bg="#222",
+        fg="#00ff88",
+        font=("Segoe UI", 14, "bold"),
+        anchor="center")
+        self.banner_focus.pack(fill=tk.X)
+
+    def _remover_banner_focus(self): # Função para remover o banner de modo focus
+        if hasattr(self, "banner_focus"):
+            self.banner_focus.destroy()
+
+
+
+    def modo_focus(self):
+        self.focus_mode = not self.focus_mode
+
+        if self.focus_mode:
+            # Fade-in antes de entrar no modo focus
+            self._fade_overlay(start=0, end=0.8, callback=self._ativar_focus)
+
+        else:
+            # Fade-out ao sair do modo focus
+            self._fade_overlay(start=0.8, end=0, callback=self._desativar_focus)
+
+    def _ativar_focus(self):
+        # esconder menus
+        self.config(menu="")
+
+        # esconder barra de estado
+        self.status_bar.pack_forget()
+
+        # esconder tabs
+        self.notebook.pack_forget()
+
+        # banner especial
+        self._criar_banner_focus()
+
+        # criar área de texto fullscreen
+        self.focus_frame = ttk.Frame(self)
+        self.focus_frame.pack(fill=tk.BOTH, expand=True)
+
+        current_frame = self.notebook.nametowidget(self.notebook.select())
+        self.focus_text = tk.Text(self.focus_frame, wrap=tk.WORD, undo=True)
+        self.focus_text.pack(fill=tk.BOTH, expand=True)
+
+        # copiar conteúdo da aba atual
+        texto = current_frame.text_widget.get("1.0", tk.END)
+        self.focus_text.insert("1.0", texto)
+
+        # sincronizar
+        self.focus_text.bind("<Key>", lambda e: self._sync_focus_text())
+
+    def _desativar_focus(self):
+        # remover banner
+        self._remover_banner_focus()
+
+        # destruir frame focus
+        self.focus_frame.destroy()
+
+        # restaurar notebook
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+
+        # restaurar barra de estado
+        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+
+        # restaurar menu
+        self._create_menu()
+
+
+
+    def _sync_focus_text(self): # Função para sincronizar o conteúdo do modo de foco com a aba original
+        current_frame = self.notebook.nametowidget(self.notebook.select())
+        texto = self.focus_text.get("1.0", tk.END)
+        current_frame.text_widget.delete("1.0", tk.END)
+        current_frame.text_widget.insert("1.0", texto)
+        current_frame.modified = True
+
+
+
+
+    #---------------------------------------------------------
+    # Funções de edição
+    #---------------------------------------------------------
+    def desfazer(self):
+        current_frame = self.notebook.nametowidget(self.notebook.select())
+        current_frame.text_widget.edit_undo()
+
+    def refazer(self):
+        current_frame = self.notebook.nametowidget(self.notebook.select())
+        current_frame.text_widget.edit_redo()
+
+    def recortar(self):
+        current_frame = self.notebook.nametowidget(self.notebook.select())
+        current_frame.text_widget.event_generate("<<Cut>>")
+
+    def copiar(self):
+        current_frame = self.notebook.nametowidget(self.notebook.select())
+        current_frame.text_widget.event_generate("<<Copy>>")
+
+    def colar(self):
+        current_frame = self.notebook.nametowidget(self.notebook.select())
+        current_frame.text_widget.event_generate("<<Paste>>")
+
+    def selecionar_tudo(self):
+        current_frame = self.notebook.nametowidget(self.notebook.select())
+        current_frame.text_widget.tag_add("sel", "1.0", "end")
+
+    def mostrar_atalhos(self):
+        atalhos = (
+            "Atalhos de Teclado:\n\n"
+            "Novo Arquivo: Ctrl+N\n"
+            "Abrir Arquivo: Ctrl+O\n"
+            "Salvar Arquivo: Ctrl+S\n"
+            "Salvar Como: Ctrl+Shift+S\n"
+            "Exportar para PDF: (Menu Arquivo)\n"
+            "Fechar Aba: Ctrl+W\n"
+            "Sair: Ctrl+Q\n"
+            "Desfazer: Ctrl+Z\n"
+            "Refazer: Ctrl+Y\n"
+            "Recortar: Ctrl+X\n"
+            "Copiar: Ctrl+C\n"
+            "Colar: Ctrl+V\n"
+            "Selecionar Tudo: Ctrl+A\n"
+        )
+        messagebox.showinfo("Atalhos de Teclado", atalhos)
+    # ---------------------------------------------------------
+    # CONTADOR DE PALAVRAS
+    # ---------------------------------------------------------
+    def atualizar_contador(self, event=None):
+        current_frame = self.notebook.nametowidget(self.notebook.select())
+        texto = current_frame.text_widget.get("1.0", tk.END).strip()
+
+        palavras = len(texto.split())
+        caracteres = len(texto)
+
+        if current_frame.current_file:
+            nome = os.path.basename(current_frame.current_file)
+            self.status_bar.config(text=f"{nome} | Palavras: {palavras} | Caracteres: {caracteres}")
+        else:
+            self.status_bar.config(text=f"Sem arquivo aberto | Palavras: {palavras} | Caracteres: {caracteres}")
+
+    # ---------------------------------------------------------
+    def run(self):
+        self.mainloop()
+
+
+if __name__ == "__main__":
+    editor = EditorTexto()
+    editor.run()

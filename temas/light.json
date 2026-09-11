@@ -1,0 +1,9 @@
+{
+    "bg": "#ffffff",
+    "fg": "#000000",
+    "insert": "#000000",
+    "select_bg": "#cce8ff",
+    "select_fg": "#000000",
+    "tab_bg": "#e6e6e6",
+    "tab_fg": "#000000"
+}
